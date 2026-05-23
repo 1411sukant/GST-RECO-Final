@@ -36,7 +36,9 @@ MONTH_ALIASES = {
 }
 
 KEYWORD_MAP = {
-    'sales_value': ['sale', 'job work', 'jobwork', 'sales'],
+    'local_sales': ['local sale', 'intra state', 'intrastate', 'within state'],
+    'interstate_sales': ['inter state', 'interstate', 'central sale', 'outside state'],
+    'sales_value': ['taxable value', 'taxable amount', 'gross sale', 'total sale', 'sale', 'job work'],
     'export_value': ['export'],
     'sez_value': ['sez'],
     'igst': ['igst', 'integrated tax', 'gst-integrated', 'gst integrated'],
@@ -46,7 +48,6 @@ KEYWORD_MAP = {
     'invoice_no': ['invoice no', 'invoice number', 'inv no', 'inv number', 'bill no', 'voucher no'],
     'invoice_date': ['invoice date', 'inv date', 'bill date', 'date'],
     'gstin': ['gstin', 'gst no', 'gst number', 'supplier gstin', 'party gstin'],
-    'taxable_value': ['taxable value', 'taxable amount', 'assessable value', 'value'],
     'total_value': ['total value', 'total amount', 'invoice value', 'gross value'],
     'note_type': ['note type', 'type'],
     'note_no': ['note no', 'note number', 'cdn no'],
@@ -170,11 +171,15 @@ def parse_books_excel(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
                 else:
                     std_df['month'] = None
 
-            for field in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
+          # --- REPLACE THIS SECTION IN parse_books_excel ---
+            for field in ['local_sales', 'interstate_sales', 'sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
                 if field in col_map:
                     std_df[field] = safe_numeric(df[col_map[field]])
                 else:
                     std_df[field] = 0.0
+
+            # Combine local and interstate sales into the master sales_value column
+            std_df['sales_value'] = std_df['sales_value'] + std_df['local_sales'] + std_df['interstate_sales']
 
             for field in ['invoice_no', 'invoice_date', 'gstin']:
                 if field in col_map:
@@ -370,9 +375,21 @@ def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
         else:
             std_df['month'] = None
 
-        for field in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
-            std_df[field] = safe_numeric(df[col_map[field]]) if field in col_map else 0.0
+        f# --- REPLACE THIS SECTION IN parse_books_pdf ---
+        for field in ['local_sales', 'interstate_sales', 'sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
+            if field in col_map:
+                std_df[field] = safe_numeric(df[col_map[field]])
+            else:
+                std_df[field] = 0.0
 
+        # Combine local and interstate sales into the master sales_value column
+        std_df['sales_value'] = std_df['sales_value'] + std_df['local_sales'] + std_df['interstate_sales']
+
+        for field in ['invoice_no', 'invoice_date', 'gstin']:
+            if field in col_map:
+                std_df[field] = df[col_map[field]].astype(str).str.strip()
+            else:
+                std_df[field] = ''
         for field in ['invoice_no', 'invoice_date', 'gstin']:
             std_df[field] = df[col_map[field]].astype(str).str.strip() if field in col_map else ''
 
