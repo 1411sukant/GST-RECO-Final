@@ -1,9 +1,5 @@
 """
 module3_gstr2b.py – ITC Reconciliation (Books vs GSTR-2B)
-GSTR-2B Logic:
-  - B2B:      ADD  IGST + CGST + SGST
-  - B2B-CDNR: Debit → ADD, Credit → SUBTRACT
-  - IMPZ:     ADD  IGST + CGST + SGST
 """
 
 import pandas as pd
@@ -13,12 +9,7 @@ from parser import aggregate_monthly, sort_months
 TAX_COLS = ['igst', 'cgst', 'sgst']
 DISPLAY_LABELS = {'igst': 'IGST', 'cgst': 'CGST', 'sgst': 'SGST', 'total_tax': 'Total Tax'}
 
-
 def aggregate_gstr2b(gstr2b_data: dict) -> pd.DataFrame:
-    """
-    Aggregate GSTR-2B sheets into a single month-wise DataFrame.
-    gstr2b_data keys: 'b2b', 'b2b_cdnr', 'impz'
-    """
     b2b_df = gstr2b_data.get('b2b', pd.DataFrame())
     cdnr_df = gstr2b_data.get('b2b_cdnr', pd.DataFrame())
     impz_df = gstr2b_data.get('impz', pd.DataFrame())
@@ -35,7 +26,6 @@ def aggregate_gstr2b(gstr2b_data: dict) -> pd.DataFrame:
     b2b_agg = aggregate_monthly(b2b_df, TAX_COLS) if not b2b_df.empty else pd.DataFrame()
     impz_agg = aggregate_monthly(impz_df, TAX_COLS) if not impz_df.empty else pd.DataFrame()
 
-    # B2B-CDNR: split by note_type
     cdnr_debit = pd.DataFrame()
     cdnr_credit = pd.DataFrame()
     if not cdnr_df.empty and 'note_type' in cdnr_df.columns:
@@ -46,7 +36,6 @@ def aggregate_gstr2b(gstr2b_data: dict) -> pd.DataFrame:
             cdnr_df[cdnr_df['note_type'].str.lower() == 'credit'].copy(), TAX_COLS
         )
     elif not cdnr_df.empty:
-        # Assume all are debit if note_type missing
         cdnr_debit = aggregate_monthly(cdnr_df, TAX_COLS)
 
     def get_val(agg_df, month, col):
@@ -69,20 +58,12 @@ def aggregate_gstr2b(gstr2b_data: dict) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
-
 def reconcile_gstr2b(
     purchase_df: pd.DataFrame,
     journal_df: pd.DataFrame,
     debit_notes_df: pd.DataFrame,
     gstr2b_data: dict,
 ) -> dict:
-    """
-    Module 3 reconciliation:
-    Net Books = Purchase + Journal - Debit Notes
-    Portal = Aggregated GSTR-2B (B2B + IMPZ + CDNR logic)
-    Difference = Net Books - Portal
-    """
-
     purchase_agg = aggregate_monthly(purchase_df, TAX_COLS) if not purchase_df.empty else pd.DataFrame()
     journal_agg  = aggregate_monthly(journal_df, TAX_COLS)  if not journal_df.empty  else pd.DataFrame()
     dn_agg       = aggregate_monthly(debit_notes_df, TAX_COLS) if not debit_notes_df.empty else pd.DataFrame()
@@ -127,9 +108,7 @@ def reconcile_gstr2b(
 
     return result
 
-
 def display_module3(reconciled: dict):
-    """Render Module 3 results in Streamlit."""
     if not reconciled:
         st.info("No reconciliation data available. Please upload the required files.")
         return
@@ -141,7 +120,6 @@ def display_module3(reconciled: dict):
         "**Difference** = Books − GSTR-2B"
     )
 
-    # Summary table
     summary_rows = []
     for month, data in reconciled.items():
         summary_rows.append({
@@ -164,7 +142,7 @@ def display_module3(reconciled: dict):
     diff_cols = [c for c in sum_df.columns if 'Diff' in c]
 
     st.dataframe(
-        sum_df.style.applymap(
+        sum_df.style.map(
             lambda v: 'color: red' if isinstance(v, (int, float)) and v < 0
             else ('color: orange; font-weight: bold' if isinstance(v, (int, float)) and v > 0 else ''),
             subset=diff_cols
@@ -207,12 +185,11 @@ def display_module3(reconciled: dict):
                     return ''
 
                 st.dataframe(
-                    df_d.style.applymap(color_diff, subset=['Difference (₹)'])
+                    df_d.style.map(color_diff, subset=['Difference (₹)'])
                               .format({'Difference (₹)': '₹{:,.2f}'}),
                     use_container_width=True,
                 )
 
-    # Grand totals
     st.divider()
     st.markdown("#### 🔢 Grand Totals")
     gt_data = {'Category': ['Books (Net)', 'GSTR-2B', 'Difference']}
