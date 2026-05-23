@@ -21,24 +21,20 @@ MONTH_ORDER = {
 }
 
 MONTH_ALIASES = {
-    'january': 'Jan', 'jan': 'Jan',
-    'february': 'Feb', 'feb': 'Feb',
-    'march': 'Mar', 'mar': 'Mar',
-    'april': 'Apr', 'apr': 'Apr',
-    'may': 'May',
-    'june': 'Jun', 'jun': 'Jun',
-    'july': 'Jul', 'jul': 'Jul',
-    'august': 'Aug', 'aug': 'Aug',
-    'september': 'Sep', 'sep': 'Sep', 'sept': 'Sep',
-    'october': 'Oct', 'oct': 'Oct',
-    'november': 'Nov', 'nov': 'Nov',
+    'january': 'Jan', 'jan': 'Jan', 'february': 'Feb', 'feb': 'Feb',
+    'march': 'Mar', 'mar': 'Mar', 'april': 'Apr', 'apr': 'Apr',
+    'may': 'May', 'june': 'Jun', 'jun': 'Jun', 'july': 'Jul', 'jul': 'Jul',
+    'august': 'Aug', 'aug': 'Aug', 'september': 'Sep', 'sep': 'Sep', 'sept': 'Sep',
+    'october': 'Oct', 'oct': 'Oct', 'november': 'Nov', 'nov': 'Nov',
     'december': 'Dec', 'dec': 'Dec',
 }
 
+# Broader keywords to ensure no columns are missed
 KEYWORD_MAP = {
-    'local_sales': ['local sale', 'intra state', 'intrastate', 'within state'],
-    'interstate_sales': ['inter state', 'interstate', 'central sale', 'outside state'],
-    'sales_value': ['taxable value', 'taxable amount', 'gross sale', 'total sale', 'sale', 'job work'],
+    'local_sales': ['local', 'intra', 'within state'],
+    'interstate_sales': ['inter', 'central', 'outside state'],
+    'taxable_value': ['taxable value', 'taxable amount', 'assessable value'],
+    'sales_value': ['gross sale', 'total sale', 'sale', 'job work'],
     'export_value': ['export'],
     'sez_value': ['sez'],
     'igst': ['igst', 'integrated tax', 'gst-integrated', 'gst integrated'],
@@ -58,19 +54,16 @@ KEYWORD_MAP = {
 # ─────────────────────────────────────────────────────────────
 
 def normalize_month(raw: str) -> str | None:
-    if pd.isna(raw):
-        return None
+    if pd.isna(raw): return None
     raw = str(raw).strip()
 
     text_only = re.sub(r'[\d\-/\s]', '', raw).lower()
-    if text_only in MONTH_ALIASES:
-        return MONTH_ALIASES[text_only]
+    if text_only in MONTH_ALIASES: return MONTH_ALIASES[text_only]
 
     m = re.match(r'([a-zA-Z]+)[\-\s]?\d{2,4}', raw)
     if m:
         key = m.group(1).lower()
-        if key in MONTH_ALIASES:
-            return MONTH_ALIASES[key]
+        if key in MONTH_ALIASES: return MONTH_ALIASES[key]
 
     patterns = [
         r'\d{4}[\-/](\d{1,2})[\-/]\d{1,2}', 
@@ -95,11 +88,9 @@ def sort_months(months: list) -> list:
 
 def extract_month_from_date(date_val) -> str | None:
     try:
-        if pd.isna(date_val):
-            return None
+        if pd.isna(date_val): return None
         dt = pd.to_datetime(date_val, dayfirst=True, errors='coerce')
-        if pd.isna(dt):
-            return normalize_month(str(date_val))
+        if pd.isna(dt): return normalize_month(str(date_val))
         num_to_abbr = {
             1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr',
             5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
@@ -116,7 +107,7 @@ def extract_month_from_date(date_val) -> str | None:
 def map_columns(df: pd.DataFrame) -> dict:
     mapping = {}
     cols_lower = {col: str(col).lower().strip() for col in df.columns}
-    used_cols = set()  # Safety set to prevent double mapping
+    used_cols = set()
 
     for std_name, keywords in KEYWORD_MAP.items():
         for actual_col, lower_col in cols_lower.items():
@@ -127,7 +118,7 @@ def map_columns(df: pd.DataFrame) -> dict:
             for kw in keywords:
                 if kw in lower_col:
                     mapping[std_name] = actual_col
-                    used_cols.add(actual_col)  # Lock the column once matched
+                    used_cols.add(actual_col)
                     break
     return mapping
 
@@ -164,16 +155,11 @@ def parse_books_excel(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
             col_map = map_columns(df)
             std_df = pd.DataFrame()
 
-            if 'month' in col_map:
-                std_df['month'] = df[col_map['month']].apply(normalize_month)
-            elif 'invoice_date' in col_map:
-                std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
+            if 'month' in col_map: std_df['month'] = df[col_map['month']].apply(normalize_month)
+            elif 'invoice_date' in col_map: std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
             else:
                 m = normalize_month(sheet)
-                if m:
-                    std_df['month'] = m
-                else:
-                    std_df['month'] = None
+                std_df['month'] = m if m else None
 
             for field in ['local_sales', 'interstate_sales', 'sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
                 if field in col_map:
@@ -181,26 +167,26 @@ def parse_books_excel(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
                 else:
                     std_df[field] = 0.0
 
-            # Prevent double-counting: Only merge local and interstate if a master 'sales_value' column wasn't found
-            if 'sales_value' not in col_map:
-                std_df['sales_value'] = std_df['local_sales'] + std_df['interstate_sales']
+            # --- MATHEMATICAL FALLBACK LOGIC ---
+            # Take the highest value among explicitly mapped sales or taxable value
+            if not std_df.empty:
+                std_df['sales_value'] = std_df[['sales_value', 'taxable_value']].max(axis=1)
+                
+                # If local + interstate is higher (because total sales column was missing), use the sum
+                sum_sales = std_df['local_sales'] + std_df['interstate_sales']
+                std_df['sales_value'] = np.maximum(std_df['sales_value'], sum_sales)
 
             for field in ['invoice_no', 'invoice_date', 'gstin']:
-                if field in col_map:
-                    std_df[field] = df[col_map[field]].astype(str).str.strip()
-                else:
-                    std_df[field] = ''
+                std_df[field] = df[col_map[field]].astype(str).str.strip() if field in col_map else ''
 
             std_df['source'] = label
             std_df['sheet'] = sheet
             frames.append(std_df)
 
-        if not frames:
-            return pd.DataFrame()
+        if not frames: return pd.DataFrame()
 
         result = pd.concat(frames, ignore_index=True)
-        result = result[result['month'].notna()].copy()
-        return result
+        return result[result['month'].notna()].copy()
     except Exception as e:
         raise ValueError(f"Error parsing Books Excel: {e}")
 
@@ -215,8 +201,7 @@ def parse_credit_ledger_excel(file_bytes: bytes) -> pd.DataFrame:
             except Exception:
                 continue
 
-            if df.shape[1] < 6:
-                continue
+            if df.shape[1] < 6: continue
 
             header_row = 0
             for i, row in df.iterrows():
@@ -233,19 +218,12 @@ def parse_credit_ledger_excel(file_bytes: bytes) -> pd.DataFrame:
             std_df = pd.DataFrame()
 
             col_f = df.iloc[:, 5] if df.shape[1] > 5 else pd.Series([''] * len(df))
-            if 'note_type' in col_map:
-                entry_col = df[col_map['note_type']]
-            else:
-                entry_col = col_f
-
+            entry_col = df[col_map['note_type']] if 'note_type' in col_map else col_f
             std_df['entry_type'] = entry_col.astype(str).str.strip().str.capitalize()
 
-            if 'invoice_date' in col_map:
-                std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
-            elif df.shape[1] > 0:
-                std_df['month'] = df.iloc[:, 0].apply(extract_month_from_date)
-            else:
-                std_df['month'] = None
+            if 'invoice_date' in col_map: std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
+            elif df.shape[1] > 0: std_df['month'] = df.iloc[:, 0].apply(extract_month_from_date)
+            else: std_df['month'] = None
 
             for field in ['igst', 'cgst', 'sgst']:
                 if field in col_map:
@@ -253,19 +231,14 @@ def parse_credit_ledger_excel(file_bytes: bytes) -> pd.DataFrame:
                 else:
                     pos = {'igst': 3, 'cgst': 4, 'sgst': 5}
                     idx = pos[field]
-                    if df.shape[1] > idx:
-                        std_df[field] = safe_numeric(df.iloc[:, idx])
-                    else:
-                        std_df[field] = 0.0
+                    std_df[field] = safe_numeric(df.iloc[:, idx]) if df.shape[1] > idx else 0.0
 
             frames.append(std_df)
 
-        if not frames:
-            return pd.DataFrame()
+        if not frames: return pd.DataFrame()
 
         result = pd.concat(frames, ignore_index=True)
-        result = result[result['month'].notna()].copy()
-        return result
+        return result[result['month'].notna()].copy()
     except Exception as e:
         raise ValueError(f"Error parsing Credit Ledger: {e}")
 
@@ -280,14 +253,8 @@ def parse_gstr2b_excel(file_bytes: bytes) -> dict:
             ('b2b_cdnr', ['b2bcdnr', 'cdnr', 'b2bcdnr', 'creditdebitnotes']),
             ('impz', ['impz', 'importofservices', 'imports', 'imp']),
         ]:
-            sheet_name = None
-            for alias in aliases:
-                if alias in sheet_names_lower:
-                    sheet_name = sheet_names_lower[alias]
-                    break
-
-            if not sheet_name:
-                continue
+            sheet_name = next((sheet_names_lower[alias] for alias in aliases if alias in sheet_names_lower), None)
+            if not sheet_name: continue
 
             try:
                 df = xl.parse(sheet_name, header=None)
@@ -296,8 +263,7 @@ def parse_gstr2b_excel(file_bytes: bytes) -> dict:
 
             header_row = 0
             for i, row in df.iterrows():
-                non_null = [str(v).strip() for v in row if not pd.isna(v)]
-                if len(non_null) >= 4:
+                if len([str(v).strip() for v in row if not pd.isna(v)]) >= 4:
                     header_row = i
                     break
 
@@ -308,31 +274,17 @@ def parse_gstr2b_excel(file_bytes: bytes) -> dict:
             col_map = map_columns(df)
             std_df = pd.DataFrame()
 
-            if 'invoice_date' in col_map:
-                std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
-            else:
-                if df.shape[1] > 3:
-                    std_df['month'] = df.iloc[:, 3].apply(extract_month_from_date)
-                else:
-                    std_df['month'] = None
+            if 'invoice_date' in col_map: std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
+            else: std_df['month'] = df.iloc[:, 3].apply(extract_month_from_date) if df.shape[1] > 3 else None
 
             for field in ['igst', 'cgst', 'sgst']:
-                if field in col_map:
-                    std_df[field] = safe_numeric(df[col_map[field]])
-                else:
-                    std_df[field] = 0.0
+                std_df[field] = safe_numeric(df[col_map[field]]) if field in col_map else 0.0
 
             for field in ['invoice_no', 'gstin']:
-                if field in col_map:
-                    std_df[field] = df[col_map[field]].astype(str).str.strip().str.upper()
-                else:
-                    std_df[field] = ''
+                std_df[field] = df[col_map[field]].astype(str).str.strip().str.upper() if field in col_map else ''
 
             if target_key == 'b2b_cdnr':
-                if 'note_type' in col_map:
-                    std_df['note_type'] = df[col_map['note_type']].astype(str).str.strip().str.capitalize()
-                else:
-                    std_df['note_type'] = 'Debit'
+                std_df['note_type'] = df[col_map['note_type']].astype(str).str.strip().str.capitalize() if 'note_type' in col_map else 'Debit'
 
             std_df = std_df[std_df['month'].notna()].copy()
             result[target_key] = std_df
@@ -342,11 +294,10 @@ def parse_gstr2b_excel(file_bytes: bytes) -> dict:
     return result
 
 # ─────────────────────────────────────────────────────────────
-# PDF PARSERS (UPDATED WITH REGEX EXTRACTION)
+# PDF PARSERS
 # ─────────────────────────────────────────────────────────────
 
 def _extract_pdf_tables(file_bytes: bytes) -> list[pd.DataFrame]:
-    """Fallback table extractor for Books PDF."""
     tables = []
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
@@ -362,7 +313,6 @@ def _extract_pdf_tables(file_bytes: bytes) -> list[pd.DataFrame]:
     return tables
 
 def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
-    """Parse a Books PDF (sales data, purchase data)."""
     tables = _extract_pdf_tables(file_bytes)
     frames = []
 
@@ -372,12 +322,9 @@ def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
             continue
 
         std_df = pd.DataFrame()
-        if 'month' in col_map:
-            std_df['month'] = df[col_map['month']].apply(normalize_month)
-        elif 'invoice_date' in col_map:
-            std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
-        else:
-            std_df['month'] = None
+        if 'month' in col_map: std_df['month'] = df[col_map['month']].apply(normalize_month)
+        elif 'invoice_date' in col_map: std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
+        else: std_df['month'] = None
 
         for field in ['local_sales', 'interstate_sales', 'sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
             if field in col_map:
@@ -385,9 +332,11 @@ def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
             else:
                 std_df[field] = 0.0
 
-        # Prevent double-counting: Only merge local and interstate if a master 'sales_value' column wasn't found
-        if 'sales_value' not in col_map:
-            std_df['sales_value'] = std_df['local_sales'] + std_df['interstate_sales']
+        # --- MATHEMATICAL FALLBACK LOGIC ---
+        if not std_df.empty:
+            std_df['sales_value'] = std_df[['sales_value', 'taxable_value']].max(axis=1)
+            sum_sales = std_df['local_sales'] + std_df['interstate_sales']
+            std_df['sales_value'] = np.maximum(std_df['sales_value'], sum_sales)
 
         for field in ['invoice_no', 'invoice_date', 'gstin']:
             std_df[field] = df[col_map[field]].astype(str).str.strip() if field in col_map else ''
@@ -395,17 +344,15 @@ def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
         std_df['source'] = label
         frames.append(std_df)
 
-    if not frames:
-        return pd.DataFrame()
+    if not frames: return pd.DataFrame()
 
     result = pd.concat(frames, ignore_index=True)
     return result[result['month'].notna()].copy()
 
 
-# --- NEW GSTR-1 REGEX HELPER FUNCTIONS ---
+# --- GSTR-1 REGEX HELPER FUNCTIONS ---
 
 def get_section_total(text, header_pattern, stop_pattern=None, target_word="total", window=1500):
-    """Finds header_pattern in text, and returns the first ₹ amount after target_word."""
     start_match = re.search(header_pattern, text, re.IGNORECASE | re.DOTALL)
     if not start_match: return 0.0
 
@@ -424,7 +371,6 @@ def get_section_total(text, header_pattern, stop_pattern=None, target_word="tota
     return 0.0
 
 def extract_liability(text):
-    """Looks for Total Liability summary line at doc end."""
     igst = cgst = sgst = 0.0
     match = re.search(r'Total\s+Liability\s*\(Outward[^)]+\)\s*([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})', text, re.IGNORECASE)
     if match:
@@ -445,31 +391,24 @@ def extract_liability(text):
 # --- REGEX GSTR-1 PARSER ---
 
 def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
-    """Extracts GSTR-1 data directly from raw PDF text."""
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
             full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-        # 1. Month
         month_name = None
         m_match = re.search(r'Tax\s+[Pp]eriod\s+([A-Za-z]+)', full_text)
-        if m_match:
-            month_name = normalize_month(m_match.group(1))
+        if m_match: month_name = normalize_month(m_match.group(1))
 
-        # 2. Sales = B2B + B2CS
         b2b = get_section_total(full_text, r'4A\s*[-–]?\s*Taxable\s+outward\s+supplies\s+made\s+to\s+registered', r'4B\s*[-–]?\s*Taxable')
         b2cs = get_section_total(full_text, r'7\s*[-–]?\s*Taxable\s+supplies.*?unregistered', r'8\s*[-–]?\s*Nil')
         
-        # 3. Exports = 6A + 6B + 6C
         exp_6a = get_section_total(full_text, r'6A\s*[–-]?\s*Exports?\s*\(', r'6B\s*[-–]?\s*Supplies')
         sez_6b = get_section_total(full_text, r'6B\s*[-–]?\s*Supplies\s+made\s+to\s+SEZ', r'6C\s*[-–]?\s*Deemed')
         deemed_6c = get_section_total(full_text, r'6C\s*[-–]?\s*Deemed\s+Exports', r'7\s*[-–]?\s*Taxable')
         
-        # 4. Credit / Debit Notes
         cdn_reg = get_section_total(full_text, r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Registered\)', r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Unregistered\)', target_word=r'Total\s*[-–]?\s*Net\s+off')
         cdn_unreg = get_section_total(full_text, r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Unregistered\)', r'9C\s*[-–]?\s*Amended', target_word=r'Total\s*[-–]?\s*Net\s+off')
         
-        # 5. Amendment (9A)
         amendment_9a = 0.0
         sec_9a = re.search(r'9A\s*[-–]?\s*Amendment', full_text, re.IGNORECASE)
         sec_9b = re.search(r'9B\s*[-–]?\s*Credit', full_text, re.IGNORECASE)
@@ -481,10 +420,8 @@ def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
                     val = float(amounts[0].replace(',', ''))
                     if val != 0.0: amendment_9a += val
 
-        # 6. Liability
         igst, cgst, sgst = extract_liability(full_text)
 
-        # Build Standard DataFrame
         df = pd.DataFrame([{
             'month': month_name,
             'sales_value': b2b + b2cs,
@@ -509,15 +446,13 @@ def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 
 def aggregate_monthly(df: pd.DataFrame, value_cols: list) -> pd.DataFrame:
-    if df.empty or 'month' not in df.columns:
-        return pd.DataFrame()
+    if df.empty or 'month' not in df.columns: return pd.DataFrame()
 
     agg_dict = {col: 'sum' for col in value_cols if col in df.columns}
     result = df.groupby('month', as_index=False).agg(agg_dict)
 
     for col in value_cols:
-        if col not in result.columns:
-            result[col] = 0.0
+        if col not in result.columns: result[col] = 0.0
 
     result['total_tax'] = (
         result.get('igst', pd.Series(0, index=result.index)) +
