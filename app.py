@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-# Import the provided modules
+# Flat structure imports (ensure these files are in the same folder as app.py)
 import parser
 import module1_outward
 import module2_itc
@@ -9,6 +9,53 @@ import module3_gstr2b
 import module4_invoice
 
 st.set_page_config(page_title="GST Reconciliation App", layout="wide", page_icon="📊")
+
+# --- HELPER FUNCTIONS FOR MULTIPLE FILES ---
+
+def process_multiple_books(files, label):
+    """Parses and concatenates multiple Books files (Excel or PDF)."""
+    dfs = []
+    if files:
+        for f in files:
+            if f.name.endswith('.pdf'):
+                dfs.append(parser.parse_books_pdf(f.getvalue(), label))
+            else:
+                dfs.append(parser.parse_books_excel(f.getvalue(), label))
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+def process_multiple_gstr2b(files):
+    """Parses and concatenates multiple GSTR-2B Excel files into a single dictionary."""
+    b2b_dfs, cdnr_dfs, impz_dfs = [], [], []
+    if files:
+        for f in files:
+            data = parser.parse_gstr2b_excel(f.getvalue())
+            b2b_dfs.append(data.get('b2b', pd.DataFrame()))
+            cdnr_dfs.append(data.get('b2b_cdnr', pd.DataFrame()))
+            impz_dfs.append(data.get('impz', pd.DataFrame()))
+    return {
+        'b2b': pd.concat(b2b_dfs, ignore_index=True) if b2b_dfs else pd.DataFrame(),
+        'b2b_cdnr': pd.concat(cdnr_dfs, ignore_index=True) if cdnr_dfs else pd.DataFrame(),
+        'impz': pd.concat(impz_dfs, ignore_index=True) if impz_dfs else pd.DataFrame()
+    }
+
+def process_multiple_gstr1(files):
+    """Parses and concatenates multiple GSTR-1 PDF files."""
+    dfs = []
+    if files:
+        for f in files:
+            dfs.append(parser.parse_gstr1_pdf(f.getvalue()))
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+def process_multiple_ledgers(files):
+    """Parses and concatenates multiple Electronic Credit Ledger files."""
+    dfs = []
+    if files:
+        for f in files:
+            dfs.append(parser.parse_credit_ledger_excel(f.getvalue()))
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+# --- MAIN APPLICATION ---
 
 def main():
     st.sidebar.title("📊 GST Reconciliation")
@@ -38,37 +85,23 @@ def main():
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            sales_file = st.file_uploader("Upload Books Sales (Excel/PDF)", type=['xlsx', 'pdf'])
+            sales_files = st.file_uploader("Upload Books Sales (Excel/PDF)", type=['xlsx', 'pdf'], accept_multiple_files=True)
         with col2:
-            cn_file = st.file_uploader("Upload Books Credit Notes (Excel/PDF)", type=['xlsx', 'pdf'])
+            cn_files = st.file_uploader("Upload Books Credit Notes (Excel/PDF)", type=['xlsx', 'pdf'], accept_multiple_files=True)
         with col3:
-            gstr1_file = st.file_uploader("Upload GSTR-1 (PDF)", type=['pdf'])
+            gstr1_files = st.file_uploader("Upload GSTR-1 (PDF)", type=['pdf'], accept_multiple_files=True)
             
         if st.button("Run Reconciliation"):
-            if sales_file and gstr1_file:
+            if sales_files and gstr1_files:
                 with st.spinner("Parsing files and reconciling..."):
-                    # Parse Sales
-                    if sales_file.name.endswith('.pdf'):
-                        sales_df = parser.parse_books_pdf(sales_file.getvalue(), "Sales")
-                    else:
-                        sales_df = parser.parse_books_excel(sales_file.getvalue(), "Sales")
+                    sales_df = process_multiple_books(sales_files, "Sales")
+                    cn_df = process_multiple_books(cn_files, "Credit Notes")
+                    gstr1_df = process_multiple_gstr1(gstr1_files)
                     
-                    # Parse Credit Notes
-                    cn_df = pd.DataFrame()
-                    if cn_file:
-                        if cn_file.name.endswith('.pdf'):
-                            cn_df = parser.parse_books_pdf(cn_file.getvalue(), "Credit Notes")
-                        else:
-                            cn_df = parser.parse_books_excel(cn_file.getvalue(), "Credit Notes")
-                            
-                    # Parse GSTR-1
-                    gstr1_df = parser.parse_gstr1_pdf(gstr1_file.getvalue())
-                    
-                    # Reconcile and Display
                     results = module1_outward.reconcile_outward(sales_df, cn_df, gstr1_df)
                     module1_outward.display_module1(results)
             else:
-                st.error("Please upload at least the Books Sales file and GSTR-1 file.")
+                st.error("Please upload at least one Books Sales file and one GSTR-1 file.")
 
     elif app_mode == "Module 2: ITC Availment":
         st.title("Module 2: ITC Availment Reconciliation")
@@ -76,19 +109,19 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            pur_file = st.file_uploader("Upload Purchase Register (Excel)", type=['xlsx'])
-            dn_file = st.file_uploader("Upload Debit Notes (Excel) [Optional]", type=['xlsx'])
+            pur_files = st.file_uploader("Upload Purchase Register (Excel)", type=['xlsx'], accept_multiple_files=True)
+            dn_files = st.file_uploader("Upload Debit Notes (Excel) [Optional]", type=['xlsx'], accept_multiple_files=True)
         with col2:
-            jnl_file = st.file_uploader("Upload Journal Register (Excel) [Optional]", type=['xlsx'])
-            credit_ledger_file = st.file_uploader("Upload Electronic Credit Ledger (Excel)", type=['xlsx'])
+            jnl_files = st.file_uploader("Upload Journal Register (Excel) [Optional]", type=['xlsx'], accept_multiple_files=True)
+            ledger_files = st.file_uploader("Upload Electronic Credit Ledger (Excel)", type=['xlsx'], accept_multiple_files=True)
             
         if st.button("Run Reconciliation"):
-            if pur_file and credit_ledger_file:
+            if pur_files and ledger_files:
                 with st.spinner("Parsing files and reconciling..."):
-                    pur_df = parser.parse_books_excel(pur_file.getvalue(), "Purchase")
-                    jnl_df = parser.parse_books_excel(jnl_file.getvalue(), "Journal") if jnl_file else pd.DataFrame()
-                    dn_df = parser.parse_books_excel(dn_file.getvalue(), "Debit Notes") if dn_file else pd.DataFrame()
-                    ledger_df = parser.parse_credit_ledger_excel(credit_ledger_file.getvalue())
+                    pur_df = process_multiple_books(pur_files, "Purchase")
+                    jnl_df = process_multiple_books(jnl_files, "Journal")
+                    dn_df = process_multiple_books(dn_files, "Debit Notes")
+                    ledger_df = process_multiple_ledgers(ledger_files)
                     
                     results = module2_itc.reconcile_itc(pur_df, jnl_df, dn_df, ledger_df)
                     module2_itc.display_module2(results)
@@ -101,19 +134,19 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            pur_file = st.file_uploader("Upload Purchase Register (Excel)", type=['xlsx'], key='m3_pur')
-            dn_file = st.file_uploader("Upload Debit Notes (Excel) [Optional]", type=['xlsx'], key='m3_dn')
+            pur_files = st.file_uploader("Upload Purchase Register (Excel)", type=['xlsx'], key='m3_pur', accept_multiple_files=True)
+            dn_files = st.file_uploader("Upload Debit Notes (Excel) [Optional]", type=['xlsx'], key='m3_dn', accept_multiple_files=True)
         with col2:
-            jnl_file = st.file_uploader("Upload Journal Register (Excel) [Optional]", type=['xlsx'], key='m3_jnl')
-            gstr2b_file = st.file_uploader("Upload GSTR-2B (Excel)", type=['xlsx'], key='m3_2b')
+            jnl_files = st.file_uploader("Upload Journal Register (Excel) [Optional]", type=['xlsx'], key='m3_jnl', accept_multiple_files=True)
+            gstr2b_files = st.file_uploader("Upload GSTR-2B (Excel)", type=['xlsx'], key='m3_2b', accept_multiple_files=True)
             
         if st.button("Run Reconciliation"):
-            if pur_file and gstr2b_file:
+            if pur_files and gstr2b_files:
                 with st.spinner("Parsing files and reconciling..."):
-                    pur_df = parser.parse_books_excel(pur_file.getvalue(), "Purchase")
-                    jnl_df = parser.parse_books_excel(jnl_file.getvalue(), "Journal") if jnl_file else pd.DataFrame()
-                    dn_df = parser.parse_books_excel(dn_file.getvalue(), "Debit Notes") if dn_file else pd.DataFrame()
-                    gstr2b_data = parser.parse_gstr2b_excel(gstr2b_file.getvalue())
+                    pur_df = process_multiple_books(pur_files, "Purchase")
+                    jnl_df = process_multiple_books(jnl_files, "Journal")
+                    dn_df = process_multiple_books(dn_files, "Debit Notes")
+                    gstr2b_data = process_multiple_gstr2b(gstr2b_files)
                     
                     results = module3_gstr2b.reconcile_gstr2b(pur_df, jnl_df, dn_df, gstr2b_data)
                     module3_gstr2b.display_module3(results)
@@ -126,19 +159,19 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            pur_file = st.file_uploader("Upload Purchase Register (Excel)", type=['xlsx'], key='m4_pur')
-            dn_file = st.file_uploader("Upload Debit Notes (Excel) [Optional]", type=['xlsx'], key='m4_dn')
+            pur_files = st.file_uploader("Upload Purchase Register (Excel)", type=['xlsx'], key='m4_pur', accept_multiple_files=True)
+            dn_files = st.file_uploader("Upload Debit Notes (Excel) [Optional]", type=['xlsx'], key='m4_dn', accept_multiple_files=True)
         with col2:
-            jnl_file = st.file_uploader("Upload Journal Register (Excel) [Optional]", type=['xlsx'], key='m4_jnl')
-            gstr2b_file = st.file_uploader("Upload GSTR-2B (Excel)", type=['xlsx'], key='m4_2b')
+            jnl_files = st.file_uploader("Upload Journal Register (Excel) [Optional]", type=['xlsx'], key='m4_jnl', accept_multiple_files=True)
+            gstr2b_files = st.file_uploader("Upload GSTR-2B (Excel)", type=['xlsx'], key='m4_2b', accept_multiple_files=True)
             
         if st.button("Run Reconciliation"):
-            if pur_file and gstr2b_file:
+            if pur_files and gstr2b_files:
                 with st.spinner("Parsing files and reconciling at invoice level..."):
-                    pur_df = parser.parse_books_excel(pur_file.getvalue(), "Purchase")
-                    jnl_df = parser.parse_books_excel(jnl_file.getvalue(), "Journal") if jnl_file else pd.DataFrame()
-                    dn_df = parser.parse_books_excel(dn_file.getvalue(), "Debit Notes") if dn_file else pd.DataFrame()
-                    gstr2b_data = parser.parse_gstr2b_excel(gstr2b_file.getvalue())
+                    pur_df = process_multiple_books(pur_files, "Purchase")
+                    jnl_df = process_multiple_books(jnl_files, "Journal")
+                    dn_df = process_multiple_books(dn_files, "Debit Notes")
+                    gstr2b_data = process_multiple_gstr2b(gstr2b_files)
                     
                     results = module4_invoice.reconcile_invoices(pur_df, jnl_df, dn_df, gstr2b_data)
                     module4_invoice.display_module4(results)
