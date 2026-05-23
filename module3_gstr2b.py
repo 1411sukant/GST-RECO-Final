@@ -8,7 +8,7 @@ GSTR-2B Logic:
 
 import pandas as pd
 import streamlit as st
-from modules.parser import aggregate_monthly, sort_months
+from parser import aggregate_monthly, sort_months
 
 TAX_COLS = ['igst', 'cgst', 'sgst']
 DISPLAY_LABELS = {'igst': 'IGST', 'cgst': 'CGST', 'sgst': 'SGST', 'total_tax': 'Total Tax'}
