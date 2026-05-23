@@ -5,8 +5,6 @@ Compares: Books (Sales – Credit Notes) vs GSTR-1 (Portal)
 
 import pandas as pd
 import streamlit as st
-
-# Updated for flat directory structure
 from parser import aggregate_monthly, sort_months, MONTH_ORDER
 
 VALUE_COLS = ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']
@@ -20,22 +18,15 @@ DISPLAY_LABELS = {
     'total_tax': 'Total Tax',
 }
 
-
 def reconcile_outward(
     books_sales_df: pd.DataFrame,
     books_cn_df: pd.DataFrame,
     gstr1_df: pd.DataFrame,
 ) -> dict:
-    """
-    Core reconciliation logic for Module 1.
-    Returns a dict keyed by month with 'books', 'portal', 'diff' sub-dicts.
-    """
-    # Aggregate
     sales_agg = aggregate_monthly(books_sales_df, VALUE_COLS)
     cn_agg = aggregate_monthly(books_cn_df, VALUE_COLS)
     portal_agg = aggregate_monthly(gstr1_df, VALUE_COLS)
 
-    # All months across sources
     all_months = set()
     for df in [sales_agg, cn_agg, portal_agg]:
         if not df.empty and 'month' in df.columns:
@@ -57,7 +48,6 @@ def reconcile_outward(
         cn_row = get_row(cn_agg, month)
         portal_row = get_row(portal_agg, month)
 
-        # Net Books = Sales - Credit Notes
         books_net = {}
         for col in VALUE_COLS:
             books_net[col] = round(sales_row.get(col, 0) - cn_row.get(col, 0), 2)
@@ -78,20 +68,15 @@ def reconcile_outward(
 
     return result
 
-
 def _format_val(val: float) -> str:
-    """Format float as Indian-style currency string."""
     if val == 0:
         return '—'
-    color = 'red' if val < 0 else ('green' if val > 0 else '')
     formatted = f"₹{abs(val):,.2f}"
     if val < 0:
         formatted = f"-{formatted}"
     return formatted
 
-
 def display_module1(reconciled: dict):
-    """Render Module 1 results in Streamlit with vertical month-wise tabulation."""
     if not reconciled:
         st.info("No reconciliation data available. Please upload the required files.")
         return
@@ -99,7 +84,6 @@ def display_module1(reconciled: dict):
     st.markdown("### 📊 Module 1 — Outward Supplies Reconciliation")
     st.caption("Formula: **Net Books** = Sales − Credit Notes | **Difference** = Books − GSTR-1")
 
-    # Summary table across all months
     summary_rows = []
     for month, data in reconciled.items():
         summary_rows.append({
@@ -120,8 +104,6 @@ def display_module1(reconciled: dict):
         })
 
     sum_df = pd.DataFrame(summary_rows)
-    
-    # Replaced deprecated .applymap() with .map() for Pandas 2.2+ support
     st.dataframe(
         sum_df.style.map(
             lambda v: 'color: red' if isinstance(v, (int, float)) and v < 0 else (
@@ -133,17 +115,12 @@ def display_module1(reconciled: dict):
     )
 
     st.divider()
-
-    # Vertical month-wise detailed cards
     st.markdown("#### 📅 Month-wise Detailed Breakdown")
 
     for month, data in reconciled.items():
         with st.expander(f"📆 {month}", expanded=False):
             col1, col2, col3 = st.columns(3)
-
-            rows_books = []
-            rows_portal = []
-            rows_diff = []
+            rows_books, rows_portal, rows_diff = [], [], []
 
             for col_key in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'total_tax']:
                 label = DISPLAY_LABELS.get(col_key, col_key)
@@ -178,14 +155,12 @@ def display_module1(reconciled: dict):
                         return 'color: green'
                     return ''
 
-                # Replaced deprecated .applymap() with .map() for Pandas 2.2+ support
                 st.dataframe(
                     df_d.style.map(color_diff, subset=['Difference (₹)'])
                               .format({'Difference (₹)': '₹{:,.2f}'}),
                     use_container_width=True,
                 )
 
-    # Grand totals
     st.divider()
     st.markdown("#### 🔢 Grand Totals")
     gt_cols = ['igst', 'cgst', 'sgst', 'total_tax', 'sales_value']
