@@ -333,120 +333,160 @@ def parse_gstr2b_excel(file_bytes: bytes) -> dict:
     return result
 
 # ─────────────────────────────────────────────────────────────
-# PDF PARSERS
-# ─────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────
-# PDF PARSERS
+# PDF PARSERS (UPDATED WITH REGEX EXTRACTION)
 # ─────────────────────────────────────────────────────────────
 
 def _extract_pdf_tables(file_bytes: bytes) -> list[pd.DataFrame]:
+    """Fallback table extractor for Books PDF."""
     tables = []
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
-                # Strategy 1: Default (looks for visible lines)
-                extracted = page.extract_tables()
-                
-                # Strategy 2: If default fails, GST PDFs often need text-based alignment
-                if not extracted:
-                    extracted = page.extract_tables({
-                        "vertical_strategy": "text",
-                        "horizontal_strategy": "text"
-                    })
-                    
-                for table in extracted:
+                for table in page.extract_tables():
                     if table and len(table) > 1:
                         cleaned_table = [[str(cell).replace('\n', ' ').strip() if cell else '' for cell in row] for row in table]
-                        
-                        headers = cleaned_table[0]
-                        df = pd.DataFrame(cleaned_table[1:], columns=headers)
-                        
-                        # Clean column names to prevent pandas errors
+                        df = pd.DataFrame(cleaned_table[1:], columns=cleaned_table[0])
                         df.columns = [str(c).strip() if c else f'col_{i}' for i, c in enumerate(df.columns)]
-                        
-                        # Handle duplicate column names (common in badly formatted PDFs)
-                        cols = pd.Series(df.columns)
-                        for dup in cols[cols.duplicated()].unique():
-                            cols[cols[cols == dup].index.values.tolist()] = [dup + '_' + str(i) if i != 0 else dup for i in range(sum(cols == dup))]
-                        df.columns = cols
-                        
                         tables.append(df)
-    except Exception as e:
-        st.error(f"PDF Extraction Error: The file may be password-protected or unreadable. Details: {e}")
+    except Exception:
+        pass
     return tables
 
-def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
+def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
+    """Parse a Books PDF (sales data, purchase data)."""
     tables = _extract_pdf_tables(file_bytes)
     frames = []
 
-    if not tables:
-        st.warning("⚠️ No data extracted from GSTR-1 PDF. The PDF may be a scanned image or the format is unsupported. Try uploading the Excel export instead.")
-        return pd.DataFrame()
-
-    # Attempt to find the Return Period globally from the first page text
-    global_month = None
-    try:
-        with pdfplumber.open(BytesIO(file_bytes)) as pdf:
-            if len(pdf.pages) > 0:
-                text = pdf.pages[0].extract_text()
-                if text:
-                    import re
-                    # GST Portal PDFs usually say "Return Period: 04/2024" or similar
-                    m = re.search(r'Return Period[\s:]+([0-9A-Za-z/\-]+)', text, re.IGNORECASE)
-                    if m:
-                        global_month = normalize_month(m.group(1))
-    except Exception:
-        pass
-
     for df in tables:
-        text_dump = df.to_string().lower()
-        has_tax = any(kw in text_dump for kw in ['igst', 'cgst', 'sgst', 'integrated', 'central', 'state'])
-        has_val = any(kw in text_dump for kw in ['value', 'amount', 'taxable'])
-        
-        if not (has_tax or has_val):
+        col_map = map_columns(df)
+        if not any(k in col_map for k in ['igst', 'cgst', 'sgst', 'sales_value', 'taxable_value']):
             continue
 
-        col_map = map_columns(df)
         std_df = pd.DataFrame()
-
-        # Month Assignment Logic
         if 'month' in col_map:
             std_df['month'] = df[col_map['month']].apply(normalize_month)
         elif 'invoice_date' in col_map:
             std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
-        elif global_month:
-            std_df['month'] = global_month
         else:
-            std_df['month'] = df.iloc[:, 0].apply(lambda x: normalize_month(str(x)) if not pd.isna(x) else None)
+            std_df['month'] = None
 
-        for field in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']:
-            if field in col_map:
-                std_df[field] = safe_numeric(df[col_map[field]])
-            else:
-                std_df[field] = 0.0
+        for field in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
+            std_df[field] = safe_numeric(df[col_map[field]]) if field in col_map else 0.0
 
-        for field in ['invoice_no', 'gstin']:
-            if field in col_map:
-                std_df[field] = df[col_map[field]].astype(str).str.strip()
-            else:
-                std_df[field] = ''
+        for field in ['invoice_no', 'invoice_date', 'gstin']:
+            std_df[field] = df[col_map[field]].astype(str).str.strip() if field in col_map else ''
 
-        std_df['source'] = 'GSTR-1'
+        std_df['source'] = label
         frames.append(std_df)
 
     if not frames:
-        st.warning("⚠️ Tables found in GSTR-1 PDF lacked recognizable tax columns. Ensure the PDF contains summary tables, or try the Excel export.")
         return pd.DataFrame()
 
     result = pd.concat(frames, ignore_index=True)
-    result = result[result['month'].notna()].copy()
-    
-    # Optional: Filter out empty rows to clean up the final dataframe
-    value_cols = ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']
-    result = result[(result[value_cols] != 0).any(axis=1)]
-    
-    return result
+    return result[result['month'].notna()].copy()
+
+
+# --- NEW GSTR-1 REGEX HELPER FUNCTIONS ---
+
+def get_section_total(text, header_pattern, stop_pattern=None, target_word="total", window=1500):
+    """Finds header_pattern in text, and returns the first ₹ amount after target_word."""
+    start_match = re.search(header_pattern, text, re.IGNORECASE | re.DOTALL)
+    if not start_match: return 0.0
+
+    start = start_match.start()
+    end = start + window
+    if stop_pattern:
+        stop_match = re.search(stop_pattern, text[start + 10:], re.IGNORECASE)
+        if stop_match: end = start + 10 + stop_match.start()
+
+    section = text[start:end]
+    target_match = re.search(target_word, section, re.IGNORECASE)
+    if not target_match: return 0.0
+
+    amounts = re.findall(r'-?[\d,]+\.\d{2}', section[target_match.start():])
+    if amounts: return float(amounts[0].replace(',', ''))
+    return 0.0
+
+def extract_liability(text):
+    """Looks for Total Liability summary line at doc end[cite: 7]."""
+    igst = cgst = sgst = 0.0
+    match = re.search(r'Total\s+Liability\s*\(Outward[^)]+\)\s*([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})', text, re.IGNORECASE)
+    if match:
+        igst = float(match.group(2).replace(',', ''))
+        cgst = float(match.group(3).replace(',', ''))
+        sgst = float(match.group(4).replace(',', ''))
+    else:
+        m2 = re.search(r'Total\s+Liability', text, re.IGNORECASE)
+        if m2:
+            chunk = text[m2.start(): m2.start() + 400]
+            amounts = re.findall(r'-?[\d,]+\.\d{2}', chunk)
+            if len(amounts) >= 4:
+                igst = float(amounts[1].replace(',', ''))
+                cgst = float(amounts[2].replace(',', ''))
+                sgst = float(amounts[3].replace(',', ''))
+    return igst, cgst, sgst
+
+# --- REGEX GSTR-1 PARSER ---
+
+def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
+    """Extracts GSTR-1 data directly from raw PDF text[cite: 7]."""
+    try:
+        with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+            full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+        # 1. Month[cite: 7]
+        month_name = None
+        m_match = re.search(r'Tax\s+[Pp]eriod\s+([A-Za-z]+)', full_text)
+        if m_match:
+            month_name = normalize_month(m_match.group(1))
+
+        # 2. Sales = B2B + B2CS[cite: 7]
+        b2b = get_section_total(full_text, r'4A\s*[-–]?\s*Taxable\s+outward\s+supplies\s+made\s+to\s+registered', r'4B\s*[-–]?\s*Taxable')
+        b2cs = get_section_total(full_text, r'7\s*[-–]?\s*Taxable\s+supplies.*?unregistered', r'8\s*[-–]?\s*Nil')
+        
+        # 3. Exports = 6A + 6B + 6C[cite: 7]
+        exp_6a = get_section_total(full_text, r'6A\s*[–-]?\s*Exports?\s*\(', r'6B\s*[-–]?\s*Supplies')
+        sez_6b = get_section_total(full_text, r'6B\s*[-–]?\s*Supplies\s+made\s+to\s+SEZ', r'6C\s*[-–]?\s*Deemed')
+        deemed_6c = get_section_total(full_text, r'6C\s*[-–]?\s*Deemed\s+Exports', r'7\s*[-–]?\s*Taxable')
+        
+        # 4. Credit / Debit Notes[cite: 7]
+        cdn_reg = get_section_total(full_text, r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Registered\)', r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Unregistered\)', target_word=r'Total\s*[-–]?\s*Net\s+off')
+        cdn_unreg = get_section_total(full_text, r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Unregistered\)', r'9C\s*[-–]?\s*Amended', target_word=r'Total\s*[-–]?\s*Net\s+off')
+        
+        # 5. Amendment (9A)[cite: 7]
+        amendment_9a = 0.0
+        sec_9a = re.search(r'9A\s*[-–]?\s*Amendment', full_text, re.IGNORECASE)
+        sec_9b = re.search(r'9B\s*[-–]?\s*Credit', full_text, re.IGNORECASE)
+        if sec_9a:
+            chunk_9a = full_text[sec_9a.start(): sec_9b.start() if sec_9b else sec_9a.start() + 5000]
+            for m in re.finditer(r'Amended\s+amount\s*[-–]?\s*Total', chunk_9a, re.IGNORECASE):
+                amounts = re.findall(r'-?[\d,]+\.\d{2}', chunk_9a[m.start(): m.start() + 300])
+                if amounts:
+                    val = float(amounts[0].replace(',', ''))
+                    if val != 0.0: amendment_9a += val
+
+        # 6. Liability[cite: 7]
+        igst, cgst, sgst = extract_liability(full_text)
+
+        # Build Standard DataFrame
+        df = pd.DataFrame([{
+            'month': month_name,
+            'sales_value': b2b + b2cs,
+            'export_value': exp_6a + sez_6b + deemed_6c,
+            'sez_value': sez_6b,
+            'cdn_value': cdn_reg + cdn_unreg,
+            'amendment_value': amendment_9a,
+            'igst': igst,
+            'cgst': cgst,
+            'sgst': sgst,
+            'source': 'GSTR-1'
+        }])
+
+        return df[df['month'].notna()].copy()
+
+    except Exception as e:
+        st.error(f"❌ Regex Extraction Failed: {e}")
+        return pd.DataFrame()
 # ─────────────────────────────────────────────────────────────
 # AGGREGATION HELPERS
 # ─────────────────────────────────────────────────────────────
