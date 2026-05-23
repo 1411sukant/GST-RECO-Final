@@ -39,11 +39,14 @@ def process_multiple_gstr2b(files):
     }
 
 def process_multiple_gstr1(files):
-    """Parses and concatenates multiple GSTR-1 PDF files."""
+    """Parses and concatenates multiple GSTR-1 files (Excel or PDF)."""
     dfs = []
     if files:
         for f in files:
-            dfs.append(parser.parse_gstr1_pdf(f.getvalue()))
+            if f.name.endswith('.pdf'):
+                dfs.append(parser.parse_gstr1_pdf(f.getvalue()))
+            else:
+                dfs.append(parser.parse_books_excel(f.getvalue(), "GSTR-1"))
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 def process_multiple_ledgers(files):
@@ -53,7 +56,6 @@ def process_multiple_ledgers(files):
         for f in files:
             dfs.append(parser.parse_credit_ledger_excel(f.getvalue()))
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
 
 # --- MAIN APPLICATION ---
 
@@ -89,7 +91,7 @@ def main():
         with col2:
             cn_files = st.file_uploader("Upload Books Credit Notes (Excel/PDF)", type=['xlsx', 'pdf'], accept_multiple_files=True)
         with col3:
-            gstr1_files = st.file_uploader("Upload GSTR-1 (PDF)", type=['pdf'], accept_multiple_files=True)
+            gstr1_files = st.file_uploader("Upload GSTR-1 (Excel/PDF)", type=['xlsx', 'pdf'], accept_multiple_files=True)
             
         if st.button("Run Reconciliation"):
             if sales_files and gstr1_files:
