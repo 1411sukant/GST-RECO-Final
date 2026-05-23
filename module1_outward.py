@@ -7,14 +7,17 @@ import pandas as pd
 import streamlit as st
 from parser import aggregate_monthly, sort_months, MONTH_ORDER
 
-VALUE_COLS = ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']
+# Added cdn_value and amendment_value to sync with new GSTR-1 parser
+VALUE_COLS = ['sales_value', 'export_value', 'sez_value', 'cdn_value', 'amendment_value', 'igst', 'cgst', 'sgst']
 DISPLAY_LABELS = {
-    'sales_value': 'Sales Value',
-    'export_value': 'Export Value',
+    'sales_value': 'Gross Sales (B2B+B2CS)',
+    'export_value': 'Total Exports (6A+6B+6C)',
     'sez_value': 'SEZ Value',
-    'igst': 'IGST',
-    'cgst': 'CGST',
-    'sgst': 'SGST',
+    'cdn_value': 'Credit/Debit Notes',
+    'amendment_value': 'Amendments (9A)',
+    'igst': 'IGST Liability',
+    'cgst': 'CGST Liability',
+    'sgst': 'SGST Liability',
     'total_tax': 'Total Tax',
 }
 
@@ -51,14 +54,10 @@ def reconcile_outward(
         books_net = {}
         for col in VALUE_COLS:
             books_net[col] = round(sales_row.get(col, 0) - cn_row.get(col, 0), 2)
-        books_net['total_tax'] = round(
-            books_net.get('igst', 0) + books_net.get('cgst', 0) + books_net.get('sgst', 0), 2
-        )
+        books_net['total_tax'] = round(books_net.get('igst', 0) + books_net.get('cgst', 0) + books_net.get('sgst', 0), 2)
 
         portal = {col: round(portal_row.get(col, 0), 2) for col in VALUE_COLS}
-        portal['total_tax'] = round(
-            portal.get('igst', 0) + portal.get('cgst', 0) + portal.get('sgst', 0), 2
-        )
+        portal['total_tax'] = round(portal.get('igst', 0) + portal.get('cgst', 0) + portal.get('sgst', 0), 2)
 
         diff = {}
         for col in VALUE_COLS + ['total_tax']:
@@ -67,14 +66,6 @@ def reconcile_outward(
         result[month] = {'books': books_net, 'portal': portal, 'diff': diff}
 
     return result
-
-def _format_val(val: float) -> str:
-    if val == 0:
-        return '—'
-    formatted = f"₹{abs(val):,.2f}"
-    if val < 0:
-        formatted = f"-{formatted}"
-    return formatted
 
 def display_module1(reconciled: dict):
     if not reconciled:
@@ -88,28 +79,19 @@ def display_module1(reconciled: dict):
     for month, data in reconciled.items():
         summary_rows.append({
             'Month': month,
-            'Books Sales (₹)': data['books'].get('sales_value', 0),
-            'Books IGST (₹)': data['books'].get('igst', 0),
-            'Books CGST (₹)': data['books'].get('cgst', 0),
-            'Books SGST (₹)': data['books'].get('sgst', 0),
+            'Books Net Sales (₹)': data['books'].get('sales_value', 0),
             'Books Total Tax (₹)': data['books'].get('total_tax', 0),
-            'GSTR-1 IGST (₹)': data['portal'].get('igst', 0),
-            'GSTR-1 CGST (₹)': data['portal'].get('cgst', 0),
-            'GSTR-1 SGST (₹)': data['portal'].get('sgst', 0),
+            'GSTR-1 Gross Sales (₹)': data['portal'].get('sales_value', 0),
+            'GSTR-1 CDNR (₹)': data['portal'].get('cdn_value', 0),
             'GSTR-1 Total Tax (₹)': data['portal'].get('total_tax', 0),
-            'Diff IGST (₹)': data['diff'].get('igst', 0),
-            'Diff CGST (₹)': data['diff'].get('cgst', 0),
-            'Diff SGST (₹)': data['diff'].get('sgst', 0),
             'Diff Total Tax (₹)': data['diff'].get('total_tax', 0),
         })
 
     sum_df = pd.DataFrame(summary_rows)
     st.dataframe(
         sum_df.style.map(
-            lambda v: 'color: red' if isinstance(v, (int, float)) and v < 0 else (
-                'color: green' if isinstance(v, (int, float)) and v > 0 else ''
-            ),
-            subset=[c for c in sum_df.columns if 'Diff' in c]
+            lambda v: 'color: red' if isinstance(v, (int, float)) and v < 0 else ('color: green' if isinstance(v, (int, float)) and v > 0 else ''),
+            subset=['Diff Total Tax (₹)']
         ).format({c: '₹{:,.2f}' for c in sum_df.columns if '(₹)' in c}),
         use_container_width=True,
     )
@@ -122,7 +104,7 @@ def display_module1(reconciled: dict):
             col1, col2, col3 = st.columns(3)
             rows_books, rows_portal, rows_diff = [], [], []
 
-            for col_key in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'total_tax']:
+            for col_key in VALUE_COLS + ['total_tax']:
                 label = DISPLAY_LABELS.get(col_key, col_key)
                 b_val = data['books'].get(col_key, 0)
                 p_val = data['portal'].get(col_key, 0)
@@ -134,13 +116,11 @@ def display_module1(reconciled: dict):
 
             with col1:
                 st.markdown("**📚 Data as per Books (Net)**")
-                df_b = pd.DataFrame(rows_books)
-                st.dataframe(df_b.style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
+                st.dataframe(pd.DataFrame(rows_books).style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
 
             with col2:
                 st.markdown("**🌐 Data as per GSTR-1**")
-                df_p = pd.DataFrame(rows_portal)
-                st.dataframe(df_p.style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
+                st.dataframe(pd.DataFrame(rows_portal).style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
 
             with col3:
                 st.markdown("**🔍 Difference (Books − GSTR-1)**")
@@ -148,30 +128,12 @@ def display_module1(reconciled: dict):
 
                 def color_diff(val):
                     if isinstance(val, (int, float)):
-                        if val < 0:
-                            return 'color: red; font-weight: bold'
-                        elif val > 0:
-                            return 'color: orange; font-weight: bold'
+                        if val < 0: return 'color: red; font-weight: bold'
+                        elif val > 0: return 'color: orange; font-weight: bold'
                         return 'color: green'
                     return ''
 
                 st.dataframe(
-                    df_d.style.map(color_diff, subset=['Difference (₹)'])
-                              .format({'Difference (₹)': '₹{:,.2f}'}),
+                    df_d.style.map(color_diff, subset=['Difference (₹)']).format({'Difference (₹)': '₹{:,.2f}'}),
                     use_container_width=True,
                 )
-
-    st.divider()
-    st.markdown("#### 🔢 Grand Totals")
-    gt_cols = ['igst', 'cgst', 'sgst', 'total_tax', 'sales_value']
-    gt_data = {'Category': ['Books (Net)', 'GSTR-1', 'Difference']}
-    for col_key in gt_cols:
-        total_books = sum(d['books'].get(col_key, 0) for d in reconciled.values())
-        total_portal = sum(d['portal'].get(col_key, 0) for d in reconciled.values())
-        total_diff = round(total_books - total_portal, 2)
-        label = DISPLAY_LABELS.get(col_key, col_key)
-        gt_data[f'{label} (₹)'] = [total_books, total_portal, total_diff]
-
-    gt_df = pd.DataFrame(gt_data)
-    st.dataframe(gt_df.style.format({c: '₹{:,.2f}' for c in gt_df.columns if '(₹)' in c}),
-                 use_container_width=True)
