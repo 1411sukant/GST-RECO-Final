@@ -1,21 +1,18 @@
 """
 module4_invoice.py – Invoice-Level Reconciliation Report
 Matches Books invoices vs GSTR-2B invoices by GSTIN + Invoice Number.
-Outputs 4 buckets: Matched, Not in Books, Not in GSTR-2B, Amount Mismatch.
 """
 
 import pandas as pd
 import streamlit as st
 import numpy as np
 
-AMOUNT_TOLERANCE = 1.0   # ₹1 tolerance for floating-point differences
+AMOUNT_TOLERANCE = 1.0   
 TAX_COLS = ['igst', 'cgst', 'sgst']
 DISPLAY_COLS = ['gstin', 'invoice_no', 'invoice_date', 'igst', 'cgst', 'sgst', 'total_tax']
 
-
 def _prepare_books(purchase_df: pd.DataFrame, journal_df: pd.DataFrame,
                    debit_notes_df: pd.DataFrame) -> pd.DataFrame:
-    """Combine purchase and journal registers, net of debit notes, at invoice level."""
     frames = []
     for df in [purchase_df, journal_df]:
         if df is not None and not df.empty:
@@ -26,7 +23,6 @@ def _prepare_books(purchase_df: pd.DataFrame, journal_df: pd.DataFrame,
 
     books = pd.concat(frames, ignore_index=True)
 
-    # Normalize keys
     books['gstin_key'] = books['gstin'].astype(str).str.strip().str.upper()
     books['inv_key'] = books['invoice_no'].astype(str).str.strip().str.upper()
     books['match_key'] = books['gstin_key'] + '||' + books['inv_key']
@@ -35,7 +31,6 @@ def _prepare_books(purchase_df: pd.DataFrame, journal_df: pd.DataFrame,
         if col not in books.columns:
             books[col] = 0.0
 
-    # Aggregate to invoice level (sum taxes for duplicate invoice lines)
     books_agg = books.groupby(['match_key', 'gstin_key', 'inv_key'], as_index=False).agg(
         invoice_date=('invoice_date', 'first'),
         igst=('igst', 'sum'),
@@ -45,7 +40,6 @@ def _prepare_books(purchase_df: pd.DataFrame, journal_df: pd.DataFrame,
     )
     books_agg['total_tax'] = books_agg['igst'] + books_agg['cgst'] + books_agg['sgst']
 
-    # Deduct Debit Notes
     if debit_notes_df is not None and not debit_notes_df.empty:
         dn = debit_notes_df.copy()
         dn['gstin_key'] = dn['gstin'].astype(str).str.strip().str.upper()
@@ -65,9 +59,7 @@ def _prepare_books(purchase_df: pd.DataFrame, journal_df: pd.DataFrame,
 
     return books_agg
 
-
 def _prepare_gstr2b(gstr2b_data: dict) -> pd.DataFrame:
-    """Flatten GSTR-2B invoice lines from B2B, B2B-CDNR, IMPZ sheets."""
     frames = []
 
     b2b = gstr2b_data.get('b2b', pd.DataFrame())
@@ -118,17 +110,12 @@ def _prepare_gstr2b(gstr2b_data: dict) -> pd.DataFrame:
     portal_agg['total_tax'] = portal_agg['igst'] + portal_agg['cgst'] + portal_agg['sgst']
     return portal_agg
 
-
 def reconcile_invoices(
     purchase_df: pd.DataFrame,
     journal_df: pd.DataFrame,
     debit_notes_df: pd.DataFrame,
     gstr2b_data: dict,
 ) -> dict:
-    """
-    Invoice-level matching.
-    Returns: {'matched': df, 'not_in_books': df, 'not_in_2b': df, 'amount_mismatch': df}
-    """
     books = _prepare_books(purchase_df, journal_df, debit_notes_df)
     portal = _prepare_gstr2b(gstr2b_data)
 
@@ -148,7 +135,6 @@ def reconcile_invoices(
     books_dict  = {row['match_key']: row for _, row in books.iterrows()} if not books.empty else {}
     portal_dict = {row['match_key']: row for _, row in portal.iterrows()} if not portal.empty else {}
 
-    # Keys in both
     common_keys = books_keys & portal_keys
     for key in common_keys:
         b_row = books_dict[key]
@@ -188,7 +174,6 @@ def reconcile_invoices(
                 'Diff SGST': round(b_row['sgst'] - p_row['sgst'], 2),
             })
 
-    # Only in GSTR-2B (Not in Books)
     for key in portal_keys - books_keys:
         p_row = portal_dict[key]
         buckets['not_in_books'].append({
@@ -202,7 +187,6 @@ def reconcile_invoices(
             '2B Total Tax': round(p_row['total_tax'], 2),
         })
 
-    # Only in Books (Not in GSTR-2B)
     for key in books_keys - portal_keys:
         b_row = books_dict[key]
         buckets['not_in_2b'].append({
@@ -218,9 +202,7 @@ def reconcile_invoices(
 
     return {k: pd.DataFrame(v) for k, v in buckets.items()}
 
-
 def display_module4(buckets: dict):
-    """Render Module 4 results in Streamlit with 4 bucket tabs."""
     if not buckets or all(df.empty for df in buckets.values()):
         st.info("No invoice-level reconciliation data available. Please upload the required files.")
         return
@@ -233,7 +215,6 @@ def display_module4(buckets: dict):
     not_in_2b    = buckets.get('not_in_2b', pd.DataFrame())
     mismatch     = buckets.get('amount_mismatch', pd.DataFrame())
 
-    # KPI metrics row
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("✅ Matched", len(matched))
     c2.metric("📥 Not in Books", len(not_in_books), delta=f"-{len(not_in_books)}" if len(not_in_books) else None, delta_color="inverse")
@@ -268,21 +249,19 @@ def display_module4(buckets: dict):
         else:
             num_cols = [c for c in not_in_books.columns if any(x in c for x in ['IGST', 'CGST', 'SGST', 'Tax'])]
             st.dataframe(
-                not_in_books.style.format({c: '₹{:,.2f}' for c in num_cols})
-                                  .set_properties(**{'background-color': '#fff3cd'}, subset=not_in_books.columns[:2].tolist()),
+                not_in_books.style.format({c: '₹{:,.2f}' for c in num_cols}),
                 use_container_width=True,
             )
             _download_button(not_in_books, "not_in_books.csv")
 
     with tab3:
-        st.markdown("**Invoices present in Books but NOT found in GSTR-2B (supplier hasn't uploaded).**")
+        st.markdown("**Invoices present in Books but NOT found in GSTR-2B.**")
         if not_in_2b.empty:
             st.success("No such invoices found.")
         else:
             num_cols = [c for c in not_in_2b.columns if any(x in c for x in ['IGST', 'CGST', 'SGST', 'Tax'])]
             st.dataframe(
-                not_in_2b.style.format({c: '₹{:,.2f}' for c in num_cols})
-                               .set_properties(**{'background-color': '#f8d7da'}, subset=not_in_2b.columns[:2].tolist()),
+                not_in_2b.style.format({c: '₹{:,.2f}' for c in num_cols}),
                 use_container_width=True,
             )
             _download_button(not_in_2b, "not_in_gstr2b.csv")
@@ -301,15 +280,13 @@ def display_module4(buckets: dict):
                 return ''
 
             st.dataframe(
-                mismatch.style.applymap(highlight_diff, subset=diff_cols)
+                mismatch.style.map(highlight_diff, subset=diff_cols)
                               .format({c: '₹{:,.2f}' for c in num_cols}),
                 use_container_width=True,
             )
             _download_button(mismatch, "amount_mismatch.csv")
 
-
 def _download_button(df: pd.DataFrame, filename: str):
-    """Render a CSV download button for a DataFrame."""
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
         label=f"⬇️ Download {filename}",
