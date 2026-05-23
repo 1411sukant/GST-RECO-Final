@@ -5,7 +5,7 @@ Compares: Books (Sales – Credit Notes) vs GSTR-1 (Portal)
 
 import pandas as pd
 import streamlit as st
-from modules.parser import aggregate_monthly, sort_months, MONTH_ORDER
+from parser import aggregate_monthly, sort_months, MONTH_ORDER
 
 VALUE_COLS = ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']
 DISPLAY_LABELS = {
