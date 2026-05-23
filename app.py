@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 
 # Import the provided modules
-from modules import parser
-from modules import module1_outward
-from modules import module2_itc
-from modules import module3_gstr2b
-from modules import module4_invoice
+import parser
+import module1_outward
+import module2_itc
+import module3_gstr2b
+import module4_invoice
 
 st.set_page_config(page_title="GST Reconciliation App", layout="wide", page_icon="📊")
 
