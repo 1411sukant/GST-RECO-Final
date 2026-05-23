@@ -336,69 +336,68 @@ def parse_gstr2b_excel(file_bytes: bytes) -> dict:
 # PDF PARSERS
 # ─────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────
+# PDF PARSERS
+# ─────────────────────────────────────────────────────────────
+
 def _extract_pdf_tables(file_bytes: bytes) -> list[pd.DataFrame]:
     tables = []
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
-                for table in page.extract_tables():
+                # Strategy 1: Default (looks for visible lines)
+                extracted = page.extract_tables()
+                
+                # Strategy 2: If default fails, GST PDFs often need text-based alignment
+                if not extracted:
+                    extracted = page.extract_tables({
+                        "vertical_strategy": "text",
+                        "horizontal_strategy": "text"
+                    })
+                    
+                for table in extracted:
                     if table and len(table) > 1:
                         cleaned_table = [[str(cell).replace('\n', ' ').strip() if cell else '' for cell in row] for row in table]
-                        df = pd.DataFrame(cleaned_table[1:], columns=cleaned_table[0])
-                        df.columns = [str(c).strip() if c else f'col_{i}'
-                                      for i, c in enumerate(df.columns)]
+                        
+                        headers = cleaned_table[0]
+                        df = pd.DataFrame(cleaned_table[1:], columns=headers)
+                        
+                        # Clean column names to prevent pandas errors
+                        df.columns = [str(c).strip() if c else f'col_{i}' for i, c in enumerate(df.columns)]
+                        
+                        # Handle duplicate column names (common in badly formatted PDFs)
+                        cols = pd.Series(df.columns)
+                        for dup in cols[cols.duplicated()].unique():
+                            cols[cols[cols == dup].index.values.tolist()] = [dup + '_' + str(i) if i != 0 else dup for i in range(sum(cols == dup))]
+                        df.columns = cols
+                        
                         tables.append(df)
     except Exception as e:
         st.error(f"PDF Extraction Error: The file may be password-protected or unreadable. Details: {e}")
     return tables
-
-def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
-    tables = _extract_pdf_tables(file_bytes)
-    frames = []
-
-    for df in tables:
-        col_map = map_columns(df)
-        if not any(k in col_map for k in ['igst', 'cgst', 'sgst', 'sales_value', 'taxable_value']):
-            continue
-
-        std_df = pd.DataFrame()
-
-        if 'month' in col_map:
-            std_df['month'] = df[col_map['month']].apply(normalize_month)
-        elif 'invoice_date' in col_map:
-            std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
-        else:
-            std_df['month'] = None
-
-        for field in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
-            if field in col_map:
-                std_df[field] = safe_numeric(df[col_map[field]])
-            else:
-                std_df[field] = 0.0
-
-        for field in ['invoice_no', 'invoice_date', 'gstin']:
-            if field in col_map:
-                std_df[field] = df[col_map[field]].astype(str).str.strip()
-            else:
-                std_df[field] = ''
-
-        std_df['source'] = label
-        frames.append(std_df)
-
-    if not frames:
-        return pd.DataFrame()
-
-    result = pd.concat(frames, ignore_index=True)
-    result = result[result['month'].notna()].copy()
-    return result
 
 def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
     tables = _extract_pdf_tables(file_bytes)
     frames = []
 
     if not tables:
-        st.warning("⚠️ No data extracted from GSTR-1 PDF. Try uploading the GSTR-1 Excel export instead.")
+        st.warning("⚠️ No data extracted from GSTR-1 PDF. The PDF may be a scanned image or the format is unsupported. Try uploading the Excel export instead.")
         return pd.DataFrame()
+
+    # Attempt to find the Return Period globally from the first page text
+    global_month = None
+    try:
+        with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+            if len(pdf.pages) > 0:
+                text = pdf.pages[0].extract_text()
+                if text:
+                    import re
+                    # GST Portal PDFs usually say "Return Period: 04/2024" or similar
+                    m = re.search(r'Return Period[\s:]+([0-9A-Za-z/\-]+)', text, re.IGNORECASE)
+                    if m:
+                        global_month = normalize_month(m.group(1))
+    except Exception:
+        pass
 
     for df in tables:
         text_dump = df.to_string().lower()
@@ -411,14 +410,15 @@ def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
         col_map = map_columns(df)
         std_df = pd.DataFrame()
 
+        # Month Assignment Logic
         if 'month' in col_map:
             std_df['month'] = df[col_map['month']].apply(normalize_month)
         elif 'invoice_date' in col_map:
             std_df['month'] = df[col_map['invoice_date']].apply(extract_month_from_date)
+        elif global_month:
+            std_df['month'] = global_month
         else:
-            std_df['month'] = df.iloc[:, 0].apply(
-                lambda x: normalize_month(str(x)) if not pd.isna(x) else None
-            )
+            std_df['month'] = df.iloc[:, 0].apply(lambda x: normalize_month(str(x)) if not pd.isna(x) else None)
 
         for field in ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']:
             if field in col_map:
@@ -436,13 +436,17 @@ def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
         frames.append(std_df)
 
     if not frames:
-        st.warning("⚠️ Tables found in GSTR-1 PDF lacked recognizable tax columns. Try the Excel export.")
+        st.warning("⚠️ Tables found in GSTR-1 PDF lacked recognizable tax columns. Ensure the PDF contains summary tables, or try the Excel export.")
         return pd.DataFrame()
 
     result = pd.concat(frames, ignore_index=True)
     result = result[result['month'].notna()].copy()
+    
+    # Optional: Filter out empty rows to clean up the final dataframe
+    value_cols = ['sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst']
+    result = result[(result[value_cols] != 0).any(axis=1)]
+    
     return result
-
 # ─────────────────────────────────────────────────────────────
 # AGGREGATION HELPERS
 # ─────────────────────────────────────────────────────────────
