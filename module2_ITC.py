@@ -5,7 +5,7 @@ Compares: Books Purchase/Journal (net of Debit Notes) vs Electronic Credit Ledge
 
 import pandas as pd
 import streamlit as st
-from modules.parser import aggregate_monthly, sort_months
+from parser import aggregate_monthly, sort_months
 
 TAX_COLS = ['igst', 'cgst', 'sgst']
 DISPLAY_LABELS = {
