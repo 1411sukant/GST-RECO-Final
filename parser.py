@@ -116,14 +116,18 @@ def extract_month_from_date(date_val) -> str | None:
 def map_columns(df: pd.DataFrame) -> dict:
     mapping = {}
     cols_lower = {col: str(col).lower().strip() for col in df.columns}
+    used_cols = set()  # Safety set to prevent double mapping
 
     for std_name, keywords in KEYWORD_MAP.items():
         for actual_col, lower_col in cols_lower.items():
+            if actual_col in used_cols:
+                continue
             if std_name in mapping:
                 break
             for kw in keywords:
                 if kw in lower_col:
                     mapping[std_name] = actual_col
+                    used_cols.add(actual_col)  # Lock the column once matched
                     break
     return mapping
 
@@ -171,15 +175,15 @@ def parse_books_excel(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
                 else:
                     std_df['month'] = None
 
-          # --- REPLACE THIS SECTION IN parse_books_excel ---
             for field in ['local_sales', 'interstate_sales', 'sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
                 if field in col_map:
                     std_df[field] = safe_numeric(df[col_map[field]])
                 else:
                     std_df[field] = 0.0
 
-            # Combine local and interstate sales into the master sales_value column
-            std_df['sales_value'] = std_df['sales_value'] + std_df['local_sales'] + std_df['interstate_sales']
+            # Prevent double-counting: Only merge local and interstate if a master 'sales_value' column wasn't found
+            if 'sales_value' not in col_map:
+                std_df['sales_value'] = std_df['local_sales'] + std_df['interstate_sales']
 
             for field in ['invoice_no', 'invoice_date', 'gstin']:
                 if field in col_map:
@@ -375,21 +379,16 @@ def parse_books_pdf(file_bytes: bytes, label: str = "Books") -> pd.DataFrame:
         else:
             std_df['month'] = None
 
-        f# --- REPLACE THIS SECTION IN parse_books_pdf ---
         for field in ['local_sales', 'interstate_sales', 'sales_value', 'export_value', 'sez_value', 'igst', 'cgst', 'sgst', 'taxable_value', 'total_value']:
             if field in col_map:
                 std_df[field] = safe_numeric(df[col_map[field]])
             else:
                 std_df[field] = 0.0
 
-        # Combine local and interstate sales into the master sales_value column
-        std_df['sales_value'] = std_df['sales_value'] + std_df['local_sales'] + std_df['interstate_sales']
+        # Prevent double-counting: Only merge local and interstate if a master 'sales_value' column wasn't found
+        if 'sales_value' not in col_map:
+            std_df['sales_value'] = std_df['local_sales'] + std_df['interstate_sales']
 
-        for field in ['invoice_no', 'invoice_date', 'gstin']:
-            if field in col_map:
-                std_df[field] = df[col_map[field]].astype(str).str.strip()
-            else:
-                std_df[field] = ''
         for field in ['invoice_no', 'invoice_date', 'gstin']:
             std_df[field] = df[col_map[field]].astype(str).str.strip() if field in col_map else ''
 
@@ -425,7 +424,7 @@ def get_section_total(text, header_pattern, stop_pattern=None, target_word="tota
     return 0.0
 
 def extract_liability(text):
-    """Looks for Total Liability summary line at doc end[cite: 7]."""
+    """Looks for Total Liability summary line at doc end."""
     igst = cgst = sgst = 0.0
     match = re.search(r'Total\s+Liability\s*\(Outward[^)]+\)\s*([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})', text, re.IGNORECASE)
     if match:
@@ -446,31 +445,31 @@ def extract_liability(text):
 # --- REGEX GSTR-1 PARSER ---
 
 def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
-    """Extracts GSTR-1 data directly from raw PDF text[cite: 7]."""
+    """Extracts GSTR-1 data directly from raw PDF text."""
     try:
         with pdfplumber.open(BytesIO(file_bytes)) as pdf:
             full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
 
-        # 1. Month[cite: 7]
+        # 1. Month
         month_name = None
         m_match = re.search(r'Tax\s+[Pp]eriod\s+([A-Za-z]+)', full_text)
         if m_match:
             month_name = normalize_month(m_match.group(1))
 
-        # 2. Sales = B2B + B2CS[cite: 7]
+        # 2. Sales = B2B + B2CS
         b2b = get_section_total(full_text, r'4A\s*[-–]?\s*Taxable\s+outward\s+supplies\s+made\s+to\s+registered', r'4B\s*[-–]?\s*Taxable')
         b2cs = get_section_total(full_text, r'7\s*[-–]?\s*Taxable\s+supplies.*?unregistered', r'8\s*[-–]?\s*Nil')
         
-        # 3. Exports = 6A + 6B + 6C[cite: 7]
+        # 3. Exports = 6A + 6B + 6C
         exp_6a = get_section_total(full_text, r'6A\s*[–-]?\s*Exports?\s*\(', r'6B\s*[-–]?\s*Supplies')
         sez_6b = get_section_total(full_text, r'6B\s*[-–]?\s*Supplies\s+made\s+to\s+SEZ', r'6C\s*[-–]?\s*Deemed')
         deemed_6c = get_section_total(full_text, r'6C\s*[-–]?\s*Deemed\s+Exports', r'7\s*[-–]?\s*Taxable')
         
-        # 4. Credit / Debit Notes[cite: 7]
+        # 4. Credit / Debit Notes
         cdn_reg = get_section_total(full_text, r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Registered\)', r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Unregistered\)', target_word=r'Total\s*[-–]?\s*Net\s+off')
         cdn_unreg = get_section_total(full_text, r'9B\s*[-–]?\s*Credit/Debit\s+Notes?\s*\(Unregistered\)', r'9C\s*[-–]?\s*Amended', target_word=r'Total\s*[-–]?\s*Net\s+off')
         
-        # 5. Amendment (9A)[cite: 7]
+        # 5. Amendment (9A)
         amendment_9a = 0.0
         sec_9a = re.search(r'9A\s*[-–]?\s*Amendment', full_text, re.IGNORECASE)
         sec_9b = re.search(r'9B\s*[-–]?\s*Credit', full_text, re.IGNORECASE)
@@ -482,7 +481,7 @@ def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
                     val = float(amounts[0].replace(',', ''))
                     if val != 0.0: amendment_9a += val
 
-        # 6. Liability[cite: 7]
+        # 6. Liability
         igst, cgst, sgst = extract_liability(full_text)
 
         # Build Standard DataFrame
@@ -504,6 +503,7 @@ def parse_gstr1_pdf(file_bytes: bytes) -> pd.DataFrame:
     except Exception as e:
         st.error(f"❌ Regex Extraction Failed: {e}")
         return pd.DataFrame()
+
 # ─────────────────────────────────────────────────────────────
 # AGGREGATION HELPERS
 # ─────────────────────────────────────────────────────────────
