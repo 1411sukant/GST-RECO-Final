@@ -15,27 +15,16 @@ DISPLAY_LABELS = {
     'total_tax': 'Total Tax',
 }
 
-
 def reconcile_itc(
     purchase_df: pd.DataFrame,
     journal_df: pd.DataFrame,
     debit_notes_df: pd.DataFrame,
     credit_ledger_df: pd.DataFrame,
 ) -> dict:
-    """
-    Module 2 reconciliation logic.
-    Net Books = Purchase + Journal - Debit Notes
-    Portal Credit = Credit entries in the Electronic Credit Ledger
-    Portal Debit (Utilized) = Debit entries (informational only)
-    Difference = Net Books - Portal Credit
-    """
-
-    # Aggregate each books source
     purchase_agg = aggregate_monthly(purchase_df, TAX_COLS) if not purchase_df.empty else pd.DataFrame()
     journal_agg = aggregate_monthly(journal_df, TAX_COLS) if not journal_df.empty else pd.DataFrame()
     dn_agg = aggregate_monthly(debit_notes_df, TAX_COLS) if not debit_notes_df.empty else pd.DataFrame()
 
-    # Aggregate Credit Ledger separately for Credit and Debit entries
     all_months = set()
 
     def months_from(df):
@@ -77,7 +66,6 @@ def reconcile_itc(
         lc = get_row(ledger_credit, month)
         ld = get_row(ledger_debit, month)
 
-        # Net Books ITC = Purchase + Journal - Debit Notes
         books_net = {}
         for col in TAX_COLS:
             books_net[col] = round(
@@ -87,19 +75,16 @@ def reconcile_itc(
             books_net.get('igst', 0) + books_net.get('cgst', 0) + books_net.get('sgst', 0), 2
         )
 
-        # Portal Credit (ITC Availed)
         portal_credit = {col: round(lc.get(col, 0), 2) for col in TAX_COLS}
         portal_credit['total_tax'] = round(
             portal_credit.get('igst', 0) + portal_credit.get('cgst', 0) + portal_credit.get('sgst', 0), 2
         )
 
-        # Portal Debit (ITC Utilized — informational)
         portal_debit = {col: round(ld.get(col, 0), 2) for col in TAX_COLS}
         portal_debit['total_tax'] = round(
             portal_debit.get('igst', 0) + portal_debit.get('cgst', 0) + portal_debit.get('sgst', 0), 2
         )
 
-        # Difference
         diff = {}
         for col in TAX_COLS + ['total_tax']:
             diff[col] = round(books_net.get(col, 0) - portal_credit.get(col, 0), 2)
@@ -113,9 +98,7 @@ def reconcile_itc(
 
     return result
 
-
 def display_module2(reconciled: dict):
-    """Render Module 2 results in Streamlit."""
     if not reconciled:
         st.info("No reconciliation data available. Please upload the required files.")
         return
@@ -127,7 +110,6 @@ def display_module2(reconciled: dict):
         "**Portal Debit** = ITC Utilized (informational)"
     )
 
-    # Summary table
     summary_rows = []
     for month, data in reconciled.items():
         summary_rows.append({
@@ -153,7 +135,7 @@ def display_module2(reconciled: dict):
     diff_cols = [c for c in sum_df.columns if 'Diff' in c]
 
     st.dataframe(
-        sum_df.style.applymap(
+        sum_df.style.map(
             lambda v: 'color: red' if isinstance(v, (int, float)) and v < 0 else (
                 'color: green' if isinstance(v, (int, float)) and v > 0 else ''
             ),
@@ -179,12 +161,12 @@ def display_module2(reconciled: dict):
                 return rows
 
             with col1:
-                st.markdown("**📚 Books (Net ITC)**")
+                st.markdown("**📚 Books (Net)**")
                 df_b = pd.DataFrame(make_rows(data['books']))
                 st.dataframe(df_b.style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
 
             with col2:
-                st.markdown("**✅ Portal Credit (Availed)**")
+                st.markdown("**✅ Portal Credit**")
                 df_c = pd.DataFrame(make_rows(data['portal_credit']))
                 st.dataframe(df_c.style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
 
@@ -203,17 +185,16 @@ def display_module2(reconciled: dict):
                     return ''
 
                 st.dataframe(
-                    df_d.style.applymap(color_diff, subset=['Difference (₹)'])
+                    df_d.style.map(color_diff, subset=['Difference (₹)'])
                               .format({'Difference (₹)': '₹{:,.2f}'}),
                     use_container_width=True,
                 )
 
             with col4:
-                st.markdown("**ℹ️ ITC Utilized (Debit)**")
+                st.markdown("**ℹ️ ITC Utilized**")
                 df_u = pd.DataFrame(make_rows(data['portal_debit']))
                 st.dataframe(df_u.style.format({'Amount (₹)': '₹{:,.2f}'}), use_container_width=True)
 
-    # Grand totals
     st.divider()
     st.markdown("#### 🔢 Grand Totals")
     gt_cols = ['igst', 'cgst', 'sgst', 'total_tax']
